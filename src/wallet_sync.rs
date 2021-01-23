@@ -24,7 +24,6 @@ use bitcoin::{
     },
     hashes::{
         hex::{FromHex, ToHex},
-        {hash160, Hash},
     },
     secp256k1,
     secp256k1::{Secp256k1, SecretKey, Signature},
@@ -648,13 +647,7 @@ impl Wallet {
 
                 let input_value =
                     convert_json_rpc_bitcoin_to_satoshis(&input_info["witness_utxo"]["amount"]);
-                let scriptcode = Builder::new()
-                    .push_opcode(all::OP_DUP)
-                    .push_opcode(all::OP_HASH160)
-                    .push_slice(&hash160::Hash::hash(pubkey.to_bytes().as_slice())[..])
-                    .push_opcode(all::OP_EQUALVERIFY)
-                    .push_opcode(all::OP_CHECKSIG)
-                    .into_script();
+                let scriptcode = Script::new_p2pkh(&pubkey.pubkey_hash());
                 let sighash = SigHashCache::new(&tx_clone).signature_hash(
                     ix,
                     &scriptcode,
@@ -744,8 +737,15 @@ impl Wallet {
         .collect::<Vec<u64>>();
 
         //rounding errors mean usually 1 or 2 satoshis are lost, add them back
-        let remainder = coinswap_amount - output_values.iter().sum::<u64>();
-        *output_values.last_mut().unwrap() = output_values.last().unwrap() + remainder;
+
+        //this calculation works like this:
+        //o = [a, b, c, ...]             | list of output values
+        //t = coinswap amount            | total desired value
+        //a <-- a + (t - (a+b+c+...))    | assign new first output value
+        //a <-- a + (t -a-b-c-...)       | rearrange
+        //a <-- t - b - c -...           |
+        *output_values.first_mut().unwrap() = coinswap_amount
+            - output_values.iter().skip(1).sum::<u64>();
         assert_eq!(output_values.iter().sum::<u64>(), coinswap_amount);
 
         let mut spending_txes = Vec::<Transaction>::new();
@@ -844,13 +844,7 @@ impl Wallet {
         rpc: &Client,
         other_pubkey: &PublicKey,
     ) -> (Address, SecretKey) {
-        let mut my_privkey_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut my_privkey_bytes);
-        //let my_privkey_bytes = [0xbb; 32];
-
-        let secp = Secp256k1::new();
-        let my_privkey = secp256k1::SecretKey::from_slice(&my_privkey_bytes).unwrap();
-        let my_pubkey = secp256k1::PublicKey::from_secret_key(&secp, &my_privkey);
+        let (my_pubkey, my_privkey) = generate_keypair();
 
         let descriptor = rpc
             .get_descriptor_info(&format!(
